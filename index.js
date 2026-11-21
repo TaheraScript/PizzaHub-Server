@@ -32,12 +32,21 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
+//menu related api
+//add menu item(vendor)
 app.post('/menu-items',async(req,res)=>{
   const menuItem = req.body
-  const result = await menuItems.insertOne(job)
+  const result = await menuItems.insertOne(menuItem)
   res.send(result)
-  console.log(result)
 })
+
+//load or get added menu items
+app.get('/menu-items',async(req,res)=>{
+  const cursor = menuItems.find()
+  const result = await cursor.toArray()
+  res.send(result)
+})
+
 //to get all users data
 app.get('/users', async (req, res) => {
   const cursor = users.find({});

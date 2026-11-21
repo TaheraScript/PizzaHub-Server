@@ -1,0 +1,1 @@
+- When the user asks a question, answer it directly and concisely instead of launching into investigation, exploration, or offers to implement a fix. Confidence: 0.8
