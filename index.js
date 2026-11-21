@@ -25,12 +25,20 @@ export async function connectToMongoDB() {
 const connectedClient = await connectToMongoDB()
 const database = connectedClient.db('pizzahub');
 const users = database.collection("user");
+const menuItems= database.collection('menuItems')
 
 
 app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
+app.post('/menu-items',async(req,res)=>{
+  const menuItem = req.body
+  const result = await menuItems.insertOne(job)
+  res.send(result)
+  console.log(result)
+})
+//to get all users data
 app.get('/users', async (req, res) => {
   const cursor = users.find({});
   const result = await cursor.toArray();
