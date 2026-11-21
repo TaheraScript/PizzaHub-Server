@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors'
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import 'dotenv/config'
 
 const app = express();
@@ -47,6 +47,13 @@ app.get('/menu-items',async(req,res)=>{
   res.send(result)
 })
 
+//delete a menu
+app.delete('/menu-items/:id',async(req,res)=>{
+  const id = req.params.id
+  const query = { _id: new ObjectId(id)};
+    const result = await menuItems.deleteOne(query);
+
+})
 //to get all users data
 app.get('/users', async (req, res) => {
   const cursor = users.find({});
