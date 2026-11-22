@@ -26,7 +26,7 @@ const connectedClient = await connectToMongoDB()
 const database = connectedClient.db('pizzahub');
 const users = database.collection("user");
 const menuItems= database.collection('menuItems')
-
+const orders = database.collection('orders')
 
 app.get('/', (req, res) => {
   res.send('Hello World!');
@@ -125,6 +125,13 @@ app.delete('/menu-items/:id',async(req,res)=>{
 app.get('/users', async (req, res) => {
   const cursor = users.find({});
   const result = await cursor.toArray();
+  res.send(result)
+})
+
+//order by menu
+app.post('/order',async(req,res)=>{
+  const order = req.body
+  const result = await orders.insertOne(order)
   res.send(result)
 })
 
