@@ -44,6 +44,14 @@ const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 const asString = (value) => (typeof value === 'string' ? value.trim() : '')
 
+//menu view details page
+app.get('menu-item/:id',async(req,res)=>{
+  const id = req.params.id
+  const query = {_id: new ObjectId(id)}
+  const result = await menuItems.findOne(query)
+  res.send(result)
+})
+
 //load or get added menu items (search + category/location filters + price sort)
 app.get('/menu-items',async(req,res)=>{
   try {
