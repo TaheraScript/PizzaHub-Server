@@ -3,6 +3,7 @@ import cors from 'cors'
 import { MongoClient, ObjectId } from 'mongodb'
 import 'dotenv/config'
 
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 const app = express()
 const PORT = process.env.PORT || 5000
 
@@ -29,6 +30,7 @@ const database = connectedClient.db('pizzahub')
 const users = database.collection('user')
 const menuItems = database.collection('menuItems')
 const orders = database.collection('orders')
+const payments = database.collection('payments')
 
 app.get('/', (req, res) => {
   res.send('Hello World!')
@@ -177,7 +179,7 @@ app.get('/orders', async (req, res) => {
     res.status(500).json({ message: 'Failed to load orders' })
   }
 })
-
+//ordered menu by customer
 app.get('/orders',async(req,res)=>{
   const query ={}
   if(req.query.customerId){
@@ -186,6 +188,17 @@ app.get('/orders',async(req,res)=>{
   const cursor = orders.find(query)
   const result = await cursor.toArray()
   res.send(result)
+})
+
+//count order menu
+app.get('/orders/count',async(req,res)=>{
+  const query ={}
+  if(req.query.customerId){
+    query.userId = req.query.customerId
+  }
+
+  const result = await orders.countDocuments(query)
+  res.send({count:result})
 })
 
 // place an order (customer)
@@ -272,6 +285,46 @@ app.post('/orders', async (req, res) => {
     res.status(500).json({ message: 'Failed to place order' })
   }
 })
+
+app.post('/payments', async (req, res) => {
+  const {sessionId}=req.body
+ const {
+    status,
+    customer_details,
+    payment_status
+  } = await stripe.checkout.sessions.retrieve(session_id)
+
+  if(status === 'complete' && payment_status === 'paid'){
+
+
+const payment ={
+  status,
+    payment_status,
+    customer_email,
+   userId: metadata.userId,
+   payment_DATE: new Date(),
+    payment_intent,
+}
+  const result = await payments.insertOne(payment)
+  //update user table
+  const query = { _id: new ObjectId(metadata.userId) };
+  const updateDoc = {
+    $set: {
+      Premium: true,
+    },
+  }
+  const updateResult = await users.updateOne(
+    query,
+    updateDoc
+  );
+  
+    res.send({success: true,result,updateResult})
+    return
+  }
+  res.send({success:false,message:'Payment verification failed'})
+})
+
+
 
 app.listen(PORT, () => {
   console.log(`Example app listening on port ${PORT}`)
