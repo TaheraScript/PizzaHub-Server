@@ -40,19 +40,78 @@ app.post('/menu-items',async(req,res)=>{
   res.send(result)
 })
 
-//load or get added menu items
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const asString = (value) => (typeof value === 'string' ? value.trim() : '')
+
+//load or get added menu items (search + category/location filters + price sort)
 app.get('/menu-items',async(req,res)=>{
-  const cursor = menuItems.find()
-  const result = await cursor.toArray()
-  res.send(result)
+  try {
+    const query = {}
+    const search = asString(req.query.search)
+    const category = asString(req.query.category)
+    const location = asString(req.query.location)
+    const status = asString(req.query.status)
+    const sort = asString(req.query.sort)
+
+    if (status) query.status = status
+    if (category) query.category = category
+    if (location) query.location = { $regex: escapeRegex(location), $options: 'i' }
+
+    if (search) {
+      const regex = { $regex: escapeRegex(search), $options: 'i' }
+      query.$or = [
+        { itemName: regex },
+        { location: regex },
+        { category: regex },
+      ]
+    }
+
+    const sortOptions = {
+      'price-asc': { price: 1 },
+      'price-desc': { price: -1 },
+    }
+
+    const cursor = menuItems.find(query)
+    if (sortOptions[sort]) cursor.sort(sortOptions[sort])
+
+    const result = await cursor.toArray()
+    res.send(result)
+  } catch (error) {
+    console.error('Failed to load menu items:', error)
+    res.status(500).json({ message: 'Failed to load menu items' })
+  }
 })
 
-//delete a menu
-app.delete('/menu-items/:id',async(req,res)=>{
-  const id = req.params.id
-  const query = { _id: new ObjectId(id)};
-    const result = await menuItems.deleteOne(query);
+//distinct locations used by approved items (for the browse-menu filter)
+app.get('/menu-items/locations',async(req,res)=>{
+  try {
+    const locations = await menuItems.distinct('location', { status: 'approved' })
+    res.json(locations.filter(Boolean).sort((a, b) => a.localeCompare(b)))
+  } catch (error) {
+    console.error('Failed to load menu locations:', error)
+    res.status(500).json({ message: 'Failed to load menu locations' })
+  }
+})
 
+//delete a menu item (supports both ObjectId ids and seeded string ids)
+app.delete('/menu-items/:id',async(req,res)=>{
+  try {
+    const id = req.params.id
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(id)
+    const result = await menuItems.deleteOne({
+      _id: isObjectId ? new ObjectId(id) : id,
+    })
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: 'Menu item not found' })
+    }
+
+    res.json(result)
+  } catch (error) {
+    console.error('Failed to delete menu item:', error)
+    res.status(500).json({ message: 'Failed to delete menu item' })
+  }
 })
 //to get all users data
 app.get('/users', async (req, res) => {
@@ -64,3 +123,4 @@ app.get('/users', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Example app listening on port ${PORT}`);
 });
+ export default app
