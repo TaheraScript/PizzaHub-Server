@@ -1,18 +1,33 @@
 import express from 'express'
 import cors from 'cors'
+import Stripe from 'stripe'
+import { jwtVerify } from 'jose'
 import { MongoClient, ObjectId } from 'mongodb'
 import 'dotenv/config'
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 const app = express()
 const PORT = process.env.PORT || 5000
+const NODE_ENV = process.env.NODE_ENV || 'development'
+
+// Allow the client app(s) to call this API. Configure via CLIENT_URL
+// (comma-separated for multiple origins) so production has no CORS errors.
+const ALLOWED_ORIGINS = (process.env.CLIENT_URL || 'http://localhost:3000')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
 app.use(express.json())
-app.use(cors())
+app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }))
 
-const client = new MongoClient(
-  `mongodb://${process.env.DB_USER}:${process.env.DB_PASSWORD}@ac-jzpvg2z-shard-00-00.sq6hc5o.mongodb.net:27017,ac-jzpvg2z-shard-00-01.sq6hc5o.mongodb.net:27017,ac-jzpvg2z-shard-00-02.sq6hc5o.mongodb.net:27017/?ssl=true&replicaSet=atlas-lorrmj-shard-0&authSource=admin`
-)
+const MONGODB_URI = process.env.MONGODB_URI
+
+if (!MONGODB_URI) {
+  throw new Error('MONGODB_URI is not set — add it to pizzahub-server/.env')
+}
+
+const client = new MongoClient(MONGODB_URI)
 
 export async function connectToMongoDB() {
   try {
@@ -25,23 +40,191 @@ export async function connectToMongoDB() {
   }
 }
 
+// ── Database & collections (§13) ────────────────────────────
 const connectedClient = await connectToMongoDB()
-const database = connectedClient.db('pizzahub')
+const database = connectedClient.db(process.env.MONGODB_DB_NAME || 'pizzahub')
+
+// Better Auth owns and manages its own auth collections (left as-is):
+//   user    → name, email, image, role (admin|vendor|customer), ...
+//   session → Better Auth session + token records
+// (Better Auth uses the singular `user`; §13 labels this the `users` collection.)
 const users = database.collection('user')
+const sessions = database.collection('session')
+
+// The four business collections (§13). All *Id fields reference another
+// collection's `_id`.
+//   menuItems    → vendorId (ref user), itemName, category, description, price,
+//                  location, image, status (pending|approved|rejected|inactive),
+//                  createdAt
+//   orders       → itemId (ref menuItems), vendorId (ref user), customerId (ref user),
+//                  deliveryDate, deliveryAddress, message,
+//                  status (pending|accepted|rejected|cancelled), createdAt
+//   transactions → vendorId (ref user), plan, amount, currency, stripeSessionId,
+//                  stripeSubscriptionId, status, createdAt
 const menuItems = database.collection('menuItems')
 const orders = database.collection('orders')
-const payments = database.collection('payments')
+const transactions = database.collection('transactions')
+
+// ── Indexes (step 8) ────────────────────────────────────────
+// Matching, unique index on `user.email` is created by Better Auth.
+async function ensureIndexes() {
+  await Promise.all([
+    // users: admin "manage users" filters/lists by role
+    users.createIndex({ role: 1 }, { name: 'user_role_idx' }),
+
+    // menuItems: public listing filters by status; dashboards/ownership by vendor
+    menuItems.createIndex({ status: 1 }, { name: 'menuItems_status_idx' }),
+    menuItems.createIndex({ category: 1 }, { name: 'menuItems_category_idx' }),
+    menuItems.createIndex({ location: 1 }, { name: 'menuItems_location_idx' }),
+    menuItems.createIndex(
+      { vendorId: 1, createdAt: -1 },
+      { name: 'menuItems_vendor_idx' }
+    ),
+
+    // orders: duplicate-active guard (same item + delivery date + status)
+    orders.createIndex(
+      { itemId: 1, deliveryDate: 1, status: 1 },
+      { name: 'orders_active_idx' }
+    ),
+    orders.createIndex(
+      { customerId: 1, createdAt: -1 },
+      { name: 'orders_customer_idx' }
+    ),
+    orders.createIndex(
+      { vendorId: 1, createdAt: -1 },
+      { name: 'orders_vendor_idx' }
+    ),
+
+    // transactions: per-vendor payment history
+    transactions.createIndex(
+      { vendorId: 1, createdAt: -1 },
+      { name: 'transactions_vendor_idx' }
+    ),
+  ])
+  console.log('Indexes ensured.')
+}
+
+await ensureIndexes()
 
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
 
+// ── JWT auth + role middleware (§12) ────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET
+
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is not set — add it to pizzahub-server/.env')
+}
+
+const jwtKey = new TextEncoder().encode(JWT_SECRET)
+
+// Verify the Bearer JWT (signature + expiry), then load the *current* user from
+// the DB so role and blocked status are always authoritative (never trusted
+// from the token/client).
+const requireAuth = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null
+    if (!token) {
+      return res.status(401).json({ message: 'Unauthorized' })
+    }
+
+    // Throws on a bad signature, malformed or expired token.
+    const { payload } = await jwtVerify(token, jwtKey)
+
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(String(payload.sub))
+    const user = isObjectId
+      ? await users.findOne({ _id: new ObjectId(payload.sub) })
+      : null
+
+    if (!user) {
+      return res.status(401).json({ message: 'Unauthorized' })
+    }
+    if (user.isBlocked) {
+      return res.status(403).json({ message: 'This account is blocked' })
+    }
+
+    req.user = user
+    next()
+  } catch {
+    return res.status(401).json({ message: 'Invalid or expired token' })
+  }
+}
+
+// Role guard: requireRole('admin') / requireRole('customer', 'vendor')
+const requireRole = (...roles) => (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ message: 'Unauthorized' })
+  }
+  if (!roles.includes(req.user.role)) {
+    return res.status(403).json({ message: 'Forbidden' })
+  }
+  next()
+}
 // ── menu related api ────────────────────────────────────────
 
-// add menu item (vendor)
-app.post('/menu-items', async (req, res) => {
+// add menu item (vendor) — vendorId, status and plan limits are enforced
+// server-side, never taken from the request body (§22)
+app.post('/menu-items', requireAuth, requireRole('vendor'), async (req, res) => {
   try {
-    const result = await menuItems.insertOne(req.body)
+    const vendorId = req.user._id
+    const { itemName, category, description, price, location, image, images } =
+      req.body ?? {}
+
+    if (
+      !itemName ||
+      !category ||
+      !description ||
+      !location ||
+      !image ||
+      price === undefined ||
+      price === null ||
+      price === ''
+    ) {
+      return res.status(400).json({
+        message:
+          'itemName, category, description, price, location and image are required',
+      })
+    }
+
+    const numericPrice = Number(price)
+    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
+      return res
+        .status(400)
+        .json({ message: 'price must be a valid non-negative number' })
+    }
+
+    // Free plan: max 3 active (approved) items (§8/§10)
+    const plan = req.user.subscriptionPlan ?? 'free'
+    if (plan !== 'premium') {
+      const activeItems = await menuItems.countDocuments({
+        vendorId,
+        status: 'approved',
+      })
+      if (activeItems >= 3) {
+        return res.status(403).json({
+          message:
+            'Free plan allows up to 3 active items. Upgrade to Premium to add more.',
+        })
+      }
+    }
+
+    const item = {
+      vendorId,
+      vendorName: req.user.businessName ?? req.user.name ?? null,
+      itemName: String(itemName).trim(),
+      category,
+      description: String(description).trim(),
+      price: numericPrice,
+      location: String(location).trim(),
+      image,
+      ...(Array.isArray(images) ? { images } : {}),
+      status: 'pending',
+      createdAt: new Date(),
+    }
+
+    const result = await menuItems.insertOne(item)
     res.status(201).json(result)
   } catch (error) {
     console.error('Failed to add menu item:', error)
@@ -147,8 +330,8 @@ app.delete('/menu-items/:id', async (req, res) => {
 
 // ── users ───────────────────────────────────────────────────
 
-// to get all users data
-app.get('/users', async (req, res) => {
+// to get all users data (admin only)
+app.get('/users', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const result = await users.find({}).toArray()
     res.json(result)
@@ -158,27 +341,67 @@ app.get('/users', async (req, res) => {
   }
 })
 
+app.get('/users/:id/premium',async(req,res)=>{
+  const id = req.params.id
+  const query =  {_id: new ObjectId(id)}
+  const result = await users.findOne(query,{projection:{Premium:1}})
+  res.send(result)
+})
+
+// ── vendor dashboard ────────────────────────────────────────
+
+// overview counts for the signed-in vendor (vendorId from the JWT, never the client)
+app.get('/vendor/overview', requireAuth, requireRole('vendor'), async (req, res) => {
+  try {
+    const vendorId = req.user._id
+
+    const [totalItems, activeItems, pendingOrders, acceptedOrders, rejectedOrders] =
+      await Promise.all([
+        menuItems.countDocuments({ vendorId }),
+        menuItems.countDocuments({ vendorId, status: 'approved' }),
+        orders.countDocuments({ vendorId, status: 'pending' }),
+        orders.countDocuments({ vendorId, status: 'accepted' }),
+        orders.countDocuments({ vendorId, status: 'rejected' }),
+      ])
+
+    res.json({
+      totalItems,
+      activeItems,
+      pendingOrders,
+      acceptedOrders,
+      rejectedOrders,
+      subscriptionPlan: req.user.subscriptionPlan ?? 'free',
+    })
+  } catch (error) {
+    console.error('Failed to load vendor overview:', error)
+    res.status(500).json({ message: 'Failed to load vendor overview' })
+  }
+})
 // ── orders ──────────────────────────────────────────────────
 
 // list orders — a customer's own orders, or a vendor's incoming orders
-app.get('/orders', async (req, res) => {
-  try {
-    const customerId = asString(req.query.customerId)
-    const vendorId = asString(req.query.vendorId)
-    const status = asString(req.query.status)
-
-    const query = {}
-    if (customerId) query.customerId = customerId
-    if (vendorId) query.vendorId = vendorId
-    if (status) query.status = status
-
-    const result = await orders.find(query).sort({ createdAt: -1 }).toArray()
-    res.json(result)
-  } catch (error) {
-    console.error('Failed to load orders:', error)
-    res.status(500).json({ message: 'Failed to load orders' })
+app.get('/orders', requireAuth, requireRole('customer', 'vendor', 'admin'), async (req, res) => {
+  const query = {}
+ if(req.query.customerId){
+    query.userId = req.query.customerId
   }
+ if(req.query.menuId){
+  const menuQuery = {_id: new ObjectId(req.query.menuId)}
+  const menu = await menuItems.findOne( menuQuery)
+    if(menu.vendorId !== req.user._id.toString() && req.user.role !== 'admin'){
+    res.status(403).send({message:'Forbidden'});
+    return
+  }
+    query.menuId = req.query.menuId
+  }
+
+
+  const cursor = applications.find(query)
+  const result = await cursor.toArray()
+  res.send(result)
 })
+
+
 //ordered menu by customer
 app.get('/orders',async(req,res)=>{
   const query ={}
@@ -201,23 +424,20 @@ app.get('/orders/count',async(req,res)=>{
   res.send({count:result})
 })
 
-// place an order (customer)
-app.post('/orders', async (req, res) => {
+// place an order (customers only — vendors and admins cannot order, §7)
+app.post('/orders', requireAuth, requireRole('customer'), async (req, res) => {
   try {
-    const {
-      itemId,
-      customerId,
-      customerName,
-      customerEmail,
-      deliveryDate,
-      deliveryAddress,
-      message,
-    } = req.body ?? {}
+    // Never trust identity from the request body (§22) — take it from the
+    // verified JWT. vendorId and status are derived server-side too.
+    const customerId = req.user._id.toString()
+    const customerName = req.user.name ?? null
+    const customerEmail = req.user.email ?? null
 
-    if (!itemId || !customerId || !deliveryDate || !deliveryAddress) {
+    const { itemId, deliveryDate, deliveryAddress, message } = req.body ?? {}
+
+    if (!itemId || !deliveryDate || !deliveryAddress) {
       return res.status(400).json({
-        message:
-          'itemId, customerId, deliveryDate and deliveryAddress are required',
+        message: 'itemId, deliveryDate and deliveryAddress are required',
       })
     }
 
@@ -251,11 +471,9 @@ app.post('/orders', async (req, res) => {
     }
 
     const order = {
-      // references
+      // references (all derived server-side, never from the body)
       itemId: item._id,
       vendorId: item.vendorId ?? null,
-      // TODO: take customerId from the verified JWT, never from the body
-      // (docs/REQUIREMENTS.md §22). No auth middleware on this server yet.
       customerId,
 
       // item snapshot
@@ -286,8 +504,18 @@ app.post('/orders', async (req, res) => {
   }
 })
 
-app.post('/payments', async (req, res) => {
+app.post('/payments/checkout-verify', async (req, res) => {
   const {sessionId}=req.body
+
+  if(!sessionId){
+    return res.send({success:false,message:'Session ID is required'})
+  }
+   const sessionQuery = {sessionId}
+      const existingPayment = await transactions.findOne(sessionQuery)
+      if(existingPayment){
+        return res.send({success:false,message:'Payment already exists'})
+      };
+
  const {
     status,
     customer_details,
@@ -305,7 +533,7 @@ const payment ={
    payment_DATE: new Date(),
     payment_intent,
 }
-  const result = await payments.insertOne(payment)
+  const result = await transactions.insertOne(payment)
   //update user table
   const query = { _id: new ObjectId(metadata.userId) };
   const updateDoc = {
@@ -326,8 +554,25 @@ const payment ={
 
 
 
+// ── 404 + central error handler (registered after all routes) ──
+
+app.use((req, res) => {
+  res
+    .status(404)
+    .json({ message: `Route not found: ${req.method} ${req.originalUrl}` })
+})
+
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err)
+  const status = err.status || err.statusCode || 500
+  res.status(status).json({
+    message: err.message || 'Internal Server Error',
+    ...(NODE_ENV !== 'production' ? { stack: err.stack } : {}),
+  })
+})
+
 app.listen(PORT, () => {
-  console.log(`Example app listening on port ${PORT}`)
+  console.log(`PizzaHub server listening on port ${PORT} (${NODE_ENV})`)
 })
 
 export default app
