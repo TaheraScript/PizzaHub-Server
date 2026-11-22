@@ -4,9 +4,7 @@
 
 PizzaHub Server is the backend API of PizzaHub, a full-stack pizza ordering and delivery platform. Built with Express.js and MongoDB, it provides RESTful API endpoints for managing users, restaurant profiles, pizza menu items, customer orders, and vendor subscriptions. It also handles authentication, role-based authorization, menu item approvals, and secure Stripe payment processing.
 
-🔗 **Live Client:** [PizzaHub](https://pizzahub-client-rust.vercel.app/)
-
-🔗 **Live API:** [PizzaHub Server](YOUR_DEPLOYED_SERVER_URL)
+🔗 **Live API:** [PizzaHub](https://pizzahub-client-rust.vercel.app/)
 
 ## ✨ Key Features
 
