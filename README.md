@@ -192,34 +192,25 @@ Create a `.env` file in the root directory and add the required environment vari
 
 ```env
 
-# Better Auth
-BETTER_AUTH_SECRET=your-better-auth-secret
-BETTER_AUTH_URL=http://localhost:3000
+# Server Configuration
+PORT=5000
+NODE_ENV=development
 
 # MongoDB
 MONGODB_URI=your-mongodb-connection-string
 MONGODB_DB_NAME=pizzahub
 
-# Google OAuth
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
+# Frontend URL
+CLIENT_URL=http://localhost:3000
 
-# JWT
+# JWT Authentication (must match the frontend JWT_SECRET)
 JWT_SECRET=your-jwt-secret
 
-# Express API
-NEXT_PUBLIC_API_URL=http://localhost:5000
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-
-# Stripe
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=your-stripe-publishable-key
+# Stripe Payment Integration
 STRIPE_SECRET_KEY=your-stripe-secret-key
-STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
 
-# ImgBB
-IMGBB_API_KEY=your-imgbb-api-key
-
-**5. Start the development server**
+# Better Auth JWKS
+JWKS_URL=http://localhost:3000/api/auth/jwks
 
 ```bash
 npm run dev
