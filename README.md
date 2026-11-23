@@ -197,17 +197,13 @@ NODE_ENV=development
 
 # MongoDB
 MONGODB_URI=your-mongodb-connection-string
-DB_NAME=pizzahub
+MONGODB_DB_NAME=pizzahub
 
 # Better Auth JWT Verification
 JWKS_URL=http://localhost:3000/api/auth/jwks
 
-# ImgBB
-IMGBB_API_KEY=your-imgbb-api-key
-
 # Stripe
 STRIPE_SECRET_KEY=your-stripe-secret-key
-STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
 
 # Client URL
 CLIENT_URL=http://localhost:3000
