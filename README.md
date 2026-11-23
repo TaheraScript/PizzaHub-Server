@@ -6,6 +6,10 @@ PizzaHub Server is the backend API of PizzaHub, a full-stack pizza ordering and 
 
 🔗 **Live API:** [PizzaHub](https://pizzahub-client-rust.vercel.app/)
 
+## 📸 Project Screenshot
+
+![Pizzahub Screenshot](./public/images/pizzahub-homepage.png)
+
 ## ✨ Key Features
 
 1. **🔐 JWT Authentication & Authorization** — Verify authenticated requests using JWT tokens and protect API endpoints with role-based access control for Customers, Vendors, and Admins.
